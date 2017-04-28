@@ -112,7 +112,7 @@ private:
 
 	bool		_task_should_exit;		/**< if true, task should exit */
 	bool		_gear_state_initialized; /**< true if the gear state has been initialized */
-	bool    	 _armed_last;        /**< record the pre state armed or disarmed. */
+	bool    	 _was_armed;        /**< record the pre state armed or disarmed. */
 	bool 		_reset_pos_sp;
 	bool 		_reset_alt_sp;
 	bool 		_do_reset_alt_pos_flag; /**< flag that indicates if both pos_sp and alt_sp needs a reset: TODO: check if we need this */
@@ -264,28 +264,8 @@ private:
 	float _ref_alt;
 	hrt_abstime _ref_timestamp;
 
-<<<<<<< 08c2c5a1a2e36b46ff414347f0b085c587418282
-	bool _reset_pos_sp;
-	bool _reset_alt_sp;
-	bool _do_reset_alt_pos_flag;
-	bool _mode_auto;
-	bool _pos_hold_engaged;
-	bool _alt_hold_engaged;
-	bool _run_pos_control;
-	bool _run_alt_control;
 	bool _pos_first_nonfinite;
 
-	bool _reset_int_z = true;
-	bool _reset_int_xy = true;
-	bool _reset_int_z_manual = false;
-	bool _reset_yaw_sp = true;
-
-	bool _hold_offboard_xy = false;
-	bool _hold_offboard_z = false;
-	bool _limit_vel_xy = false;
-
-=======
->>>>>>> mc_pos_control: move flags to same code location
 	math::Vector<3> _thrust_int;
 	math::Vector<3> _pos;
 	math::Vector<3> _pos_sp;
@@ -427,7 +407,7 @@ MulticopterPositionControl::MulticopterPositionControl() :
 	SuperBlock(nullptr, "MPC"),
 	_task_should_exit(false),
 	_gear_state_initialized(false),
-	_armed_last(false),
+	_was_armed(false),
 	_reset_pos_sp(true),
 	_reset_alt_sp(true),
 	_do_reset_alt_pos_flag(true),
@@ -496,18 +476,7 @@ MulticopterPositionControl::MulticopterPositionControl() :
 	_user_intention_z(brake),
 	_ref_alt(0.0f),
 	_ref_timestamp(0),
-<<<<<<< 08c2c5a1a2e36b46ff414347f0b085c587418282
-	_reset_pos_sp(true),
-	_reset_alt_sp(true),
-	_do_reset_alt_pos_flag(true),
-	_mode_auto(false),
-	_pos_hold_engaged(false),
-	_alt_hold_engaged(false),
-	_run_pos_control(true),
-	_run_alt_control(true),
 	_pos_first_nonfinite(true),
-=======
->>>>>>> mc_pos_control: move flags to same code location
 	_yaw(0.0f),
 	_yaw_takeoff(0.0f),
 	_vel_z_lp(0),
@@ -1012,7 +981,6 @@ MulticopterPositionControl::get_cruising_speed_xy()
 		_pos_sp_triplet.current.cruising_speed : _params.vel_cruise_xy);
 }
 
-
 void
 MulticopterPositionControl::set_manual_acceleration_z(float &max_acceleration, const float stick_z, const float dt)
 {
@@ -1445,21 +1413,10 @@ MulticopterPositionControl::control_manual(float dt)
 	}
 
 	if (_vehicle_land_detected.landed) {
-		/* don't run controller when landed */
-		_reset_pos_sp = true;
-		_reset_alt_sp = true;
-		_mode_auto = false;
-		_reset_int_z = true;
-		_reset_int_xy = true;
-
-		_R_setpoint.identity();
-
-		_att_sp.roll_body = 0.0f;
-		_att_sp.pitch_body = 0.0f;
-		_att_sp.yaw_body = _yaw;
-		_att_sp.thrust = 0.0f;
-
-		_att_sp.timestamp = hrt_absolute_time();
+		/* don't run controller when landed
+		 * NOTE:
+		 * This only works in manual since once we give throttle input, the
+		 * landdetector will exit the landing state */
 
 	} else {
 		control_position(dt);
@@ -2631,7 +2588,6 @@ MulticopterPositionControl::task_main()
 	/* We really need to know from the beginning if we're landed or in-air. */
 	orb_copy(ORB_ID(vehicle_land_detected), _vehicle_land_detected_sub, &_vehicle_land_detected);
 
-	bool was_armed = false;
 	bool was_landed = true;
 
 	hrt_abstime t_prev = 0;
@@ -2674,19 +2630,34 @@ MulticopterPositionControl::task_main()
 		/* set default max velocity in xy to vel_max */
 		_vel_max_xy = _params.vel_max_xy;
 
-		if (_control_mode.flag_armed && !was_armed) {
-			/* reset setpoints and integrals on arming */
+
+		/* reset flags when landed */
+		if (_vehicle_land_detected.landed) {
 			_reset_pos_sp = true;
 			_reset_alt_sp = true;
 			_do_reset_alt_pos_flag = true;
-			_vel_sp_prev.zero();
+			_mode_auto = false;
+			_pos_hold_engaged = false;
+			_alt_hold_engaged = false;
+			_run_pos_control = true;
+			_run_alt_control = true;
 			_reset_int_z = true;
 			_reset_int_xy = true;
 			_reset_yaw_sp = true;
+			_hold_offboard_xy = false;
+			_hold_offboard_z = false;
+			_in_takeoff  = false;
+			_in_landing = false;
+			_lnd_reached_ground = false;
+			_state_updn_revert = false;
+
+			/* also reset previous setpoints */
 			_yaw_takeoff = _yaw;
+
+			_vel_sp_prev.zero();
+			_vel_prev.zero();
 		}
 
-		was_armed = _control_mode.flag_armed;
 
 		/* reset setpoints and integrators VTOL in FW mode */
 		if (_vehicle_status.is_vtol && !_vehicle_status.is_rotary_wing) {
@@ -2778,15 +2749,17 @@ MulticopterPositionControl::task_main()
 		_vel_prev = _vel;
 
 		/* publish attitude setpoint
-		 * Do not publish if offboard is enabled but position/velocity/accel control is disabled,
-		 * in this case the attitude setpoint is published by the mavlink app. Also do not publish
-		 * if the vehicle is a VTOL and it's just doing a transition (the VTOL attitude control module will generate
+		 * Do not publish if
+		 * - offboard is enabled but position/velocity/accel control is disabled,
+		 * in this case the attitude setpoint is published by the mavlink app.
+		 * - if the vehicle is a VTOL and it's just doing a transition (the VTOL attitude control module will generate
 		 * attitude setpoints for the transition).
+		 * - if not armed
 		 */
-		if (!(_control_mode.flag_control_offboard_enabled &&
-		      !(_control_mode.flag_control_position_enabled ||
-			_control_mode.flag_control_velocity_enabled ||
-			_control_mode.flag_control_acceleration_enabled))) {
+		if (_control_mode.flag_armed  && (!(_control_mode.flag_control_offboard_enabled &&
+						    !(_control_mode.flag_control_position_enabled ||
+						      _control_mode.flag_control_velocity_enabled ||
+						      _control_mode.flag_control_acceleration_enabled)))) {
 
 			if (_att_sp_pub != nullptr) {
 				orb_publish(_attitude_setpoint_id, _att_sp_pub, &_att_sp);
