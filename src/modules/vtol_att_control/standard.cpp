@@ -177,7 +177,8 @@ void Standard::update_vtol_state()
 				_vtol_schedule.flight_mode = TRANSITION_TO_MC;
 				_flag_enable_mc_motors = true;
 				_vtol_schedule.transition_start = hrt_absolute_time();
-				if(_params_handles_standard.reverse_output > FLT_EPSILON) {
+
+				if (_params_handles_standard.reverse_output > FLT_EPSILON) {
 					_pusher_throttle = _params_standard.reverse_throttle;
 					_reverse_output = _params_standard.reverse_output;
 
@@ -202,7 +203,7 @@ void Standard::update_vtol_state()
 			// transition to MC mode if transition time has passed
 			// XXX: base this on XY hold velocity of MC
 			if (hrt_elapsed_time(&_vtol_schedule.transition_start) >
-				(_params_standard.back_trans_dur * 1000000.0f)) {
+			    (_params_standard.back_trans_dur * 1000000.0f)) {
 				_vtol_schedule.flight_mode = MC_MODE;
 			}
 
@@ -228,7 +229,7 @@ void Standard::update_vtol_state()
 		} else if (_vtol_schedule.flight_mode == TRANSITION_TO_FW) {
 			// continue the transition to fw mode while monitoring airspeed for a final switch to fw mode
 			if (((_params_standard.airspeed_mode == control_state_s::AIRSPD_MODE_DISABLED ||
-				  _airspeed->indicated_airspeed_m_s >= _params_standard.airspeed_trans) &&
+			      _airspeed->indicated_airspeed_m_s >= _params_standard.airspeed_trans) &&
 			     (float)hrt_elapsed_time(&_vtol_schedule.transition_start)
 			     > (_params_standard.front_trans_time_min * 1000000.0f)) ||
 			    can_transition_on_ground()) {
